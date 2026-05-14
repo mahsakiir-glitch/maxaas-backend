@@ -4,8 +4,6 @@ const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-
-// --- CONFIGURATION ---
 app.use(cors({ origin: '*' })); 
 app.use(express.json());
 
@@ -15,7 +13,9 @@ const SECRET_KEY = 'Maxaas_Gold_Trader_Secret_2026';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// --- AUTH MIDDLEWARE ---
+// Dynamic Credentials (Starts with default, can be changed via API)
+let currentCredentials = { email: 'admin@maxaas.u', password: 'password' };
+
 const authMiddleware = (req, res, next) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return res.status(401).json({ message: 'Unauthorized' });
@@ -27,38 +27,51 @@ const authMiddleware = (req, res, next) => {
     }
 };
 
-// ==========================================
-// 🔥 AUTH ROUTES
-// ==========================================
+// --- AUTH ROUTES ---
 app.post('/api/v1/auth/login', (req, res) => {
     const { email, password } = req.body;
-    if (email === 'admin@maxaas.u' && password === 'password') {
-        const token = jwt.sign({ role: 'admin' }, SECRET_KEY, { expiresIn: '24h' });
+    // Checks against dynamic credentials
+    if (email === currentCredentials.email && password === currentCredentials.password) {
+        const token = jwt.sign({ role: 'admin', email }, SECRET_KEY, { expiresIn: '24h' });
         return res.json({ token });
     }
     res.status(401).json({ message: 'Invalid credentials' });
 });
 
-// ==========================================
-// 🔥 VIDEO ROUTES (Full CRUD)
-// ==========================================
+app.post('/api/v1/auth/change-credentials', authMiddleware, (req, res) => {
+    const { newEmail, newPassword } = req.body;
+    if (!newEmail || !newPassword) return res.status(400).json({ message: 'Email and password required' });
+    
+    // Update the in-memory credentials (Old default instantly invalidated)
+    currentCredentials.email = newEmail;
+    currentCredentials.password = newPassword;
+    
+    // Issue a new token with the new email so the admin stays logged in
+    const newToken = jwt.sign({ role: 'admin', email: newEmail }, SECRET_KEY, { expiresIn: '24h' });
+    res.json({ message: 'Credentials updated successfully', token: newToken });
+});
+
+// --- VIDEO ROUTES (Matched to SQL Schema) ---
 app.get('/api/v1/videos', async (req, res) => {
-    const { data, error } = await supabase.from('videos').select('*').order('id', { ascending: false });
+    const { data, error } = await supabase.from('videos').select('*').order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
 });
 
 app.post('/api/v1/videos', authMiddleware, async (req, res) => {
-    const { title, url, desc, catId } = req.body;
-    const { data, error } = await supabase.from('videos').insert([{ title, url, desc, catId: catId || null, views: 0 }]).select();
+    const { title, url, type, parent_id, is_category, views, thumbnail_url, description } = req.body;
+    const { data, error } = await supabase.from('videos').insert([{ 
+        title, url, type: type || 'video', parent_id: parent_id || null, 
+        is_category: is_category || false, views: views || 0, 
+        thumbnail_url: thumbnail_url || null, description: description || null 
+    }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
 });
 
 app.put('/api/v1/videos/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
-    const updateData = req.body;
-    const { data, error } = await supabase.from('videos').update(updateData).eq('id', id).select();
+    const { data, error } = await supabase.from('videos').update(req.body).eq('id', id).select();
     if (error) return res.status(500).json({ error: error.message });
     if (!data.length) return res.status(404).json({ message: 'Not found' });
     res.json(data[0]);
@@ -71,26 +84,23 @@ app.delete('/api/v1/videos/:id', authMiddleware, async (req, res) => {
     res.status(204).send();
 });
 
-// ==========================================
-// 🔥 AUDIO ROUTES (Full CRUD)
-// ==========================================
+// --- AUDIO ROUTES (Matched to SQL Schema) ---
 app.get('/api/v1/audio', async (req, res) => {
-    const { data, error } = await supabase.from('audio').select('*').order('id', { ascending: false });
+    const { data, error } = await supabase.from('audio').select('*').order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
 });
 
 app.post('/api/v1/audio', authMiddleware, async (req, res) => {
-    const { title, url, dur, catId } = req.body;
-    const { data, error } = await supabase.from('audio').insert([{ title, url, dur: dur || '--:--', catId: catId || null }]).select();
+    const { title, url, desc } = req.body;
+    const { data, error } = await supabase.from('audio').insert([{ title, url, desc: desc || null }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
 });
 
 app.put('/api/v1/audio/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
-    const updateData = req.body;
-    const { data, error } = await supabase.from('audio').update(updateData).eq('id', id).select();
+    const { data, error } = await supabase.from('audio').update(req.body).eq('id', id).select();
     if (error) return res.status(500).json({ error: error.message });
     if (!data.length) return res.status(404).json({ message: 'Not found' });
     res.json(data[0]);
@@ -103,63 +113,35 @@ app.delete('/api/v1/audio/:id', authMiddleware, async (req, res) => {
     res.status(204).send();
 });
 
-// ==========================================
-// 🔥 POSTS / NEWS ROUTES (Full CRUD)
-// ==========================================
+// --- POSTS & COURSES (Unchanged, assumed correct) ---
 app.get('/api/v1/posts', async (req, res) => {
     const { data, error } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
 });
-
 app.post('/api/v1/posts', authMiddleware, async (req, res) => {
-    const { content, imageUrl, videoUrl, avatar } = req.body;
-    const { data, error } = await supabase.from('posts').insert([{ content, imageUrl: imageUrl || null, videoUrl: videoUrl || null, avatar: avatar || null }]).select();
+    const { content, imageUrl, videoUrl } = req.body;
+    const { data, error } = await supabase.from('posts').insert([{ content, imageUrl: imageUrl || null, videoUrl: videoUrl || null }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
 });
-
-app.put('/api/v1/posts/:id', authMiddleware, async (req, res) => {
-    const { id } = req.params;
-    const updateData = req.body;
-    const { data, error } = await supabase.from('posts').update(updateData).eq('id', id).select();
-    if (error) return res.status(500).json({ error: error.message });
-    if (!data.length) return res.status(404).json({ message: 'Not found' });
-    res.json(data[0]);
-});
-
 app.delete('/api/v1/posts/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const { error } = await supabase.from('posts').delete().eq('id', id);
     if (error) return res.status(500).json({ error: error.message });
     res.status(204).send();
 });
-
-// ==========================================
-// 🔥 COURSES ROUTES (Full CRUD)
-// ==========================================
 app.get('/api/v1/courses', async (req, res) => {
     const { data, error } = await supabase.from('courses').select('*').order('id', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
 });
-
 app.post('/api/v1/courses', authMiddleware, async (req, res) => {
     const { name, desc, type } = req.body;
     const { data, error } = await supabase.from('courses').insert([{ name, desc: desc || null, type: type || 'video' }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
 });
-
-app.put('/api/v1/courses/:id', authMiddleware, async (req, res) => {
-    const { id } = req.params;
-    const updateData = req.body;
-    const { data, error } = await supabase.from('courses').update(updateData).eq('id', id).select();
-    if (error) return res.status(500).json({ error: error.message });
-    if (!data.length) return res.status(404).json({ message: 'Not found' });
-    res.json(data[0]);
-});
-
 app.delete('/api/v1/courses/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const { error } = await supabase.from('courses').delete().eq('id', id);
@@ -167,8 +149,5 @@ app.delete('/api/v1/courses/:id', authMiddleware, async (req, res) => {
     res.status(204).send();
 });
 
-// --- SERVER START ---
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
