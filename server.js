@@ -1,63 +1,119 @@
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
+
+// --- SECURITY MIDDLEWARES ---
+app.use(helmet()); // Sets secure HTTP headers
 app.use(cors({ origin: '*' })); 
 app.use(express.json());
 
+// Rate Limiter for Login (Anti Brute-Force)
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 5, // Limit each IP to 5 requests per windowMs
+    message: "Too many login attempts, please try again after 15 minutes"
+});
+
+// --- CONFIGURATION ---
 const SUPABASE_URL = 'https://aoxclvpbdoxklwfrumhr.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFveGNsdnBiZG94a2x3ZnJ1bWhyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1OTYyMzYsImV4cCI6MjA5NDE3MjIzNn0.U9p-nW4bXH6iujT7omhAt1lRL5WMwUVnvjhk69OID5U';
-const SECRET_KEY = 'Maxaas_Gold_Trader_Secret_2026'; 
-
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Dynamic Credentials (Starts with default, can be changed via API)
-let currentCredentials = { email: 'admin@maxaas.u', password: 'password' };
+// Dynamic Secret Key & Credentials (Changes when password is updated)
+let currentSecret = 'Maxaas_Gold_Trader_Initial_Secret_2026';
+let currentCredentials = { 
+    email: 'admin@maxaas.u', 
+    passwordHash: bcrypt.hashSync('password', 10) // Default password: "password"
+};
 
 const authMiddleware = (req, res, next) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return res.status(401).json({ message: 'Unauthorized' });
     try {
-        jwt.verify(token, SECRET_KEY);
+        jwt.verify(token, currentSecret); // Uses the active secret
         next();
     } catch (err) {
-        res.status(403).json({ message: 'Invalid Token' });
+        res.status(403).json({ message: 'Invalid or Expired Token' });
     }
 };
 
 // --- AUTH ROUTES ---
-app.post('/api/v1/auth/login', (req, res) => {
+app.post('/api/v1/auth/login', loginLimiter, async (req, res) => {
     const { email, password } = req.body;
-    // Checks against dynamic credentials
-    if (email === currentCredentials.email && password === currentCredentials.password) {
-        const token = jwt.sign({ role: 'admin', email }, SECRET_KEY, { expiresIn: '24h' });
+    if (email === currentCredentials.email && bcrypt.compareSync(password, currentCredentials.passwordHash)) {
+        const token = jwt.sign({ role: 'admin', email }, currentSecret, { expiresIn: '24h' });
         return res.json({ token });
     }
     res.status(401).json({ message: 'Invalid credentials' });
 });
 
-app.post('/api/v1/auth/change-credentials', authMiddleware, (req, res) => {
+app.post('/api/v1/auth/change-credentials', authMiddleware, async (req, res) => {
     const { newEmail, newPassword } = req.body;
     if (!newEmail || !newPassword) return res.status(400).json({ message: 'Email and password required' });
     
-    // Update the in-memory credentials (Old default instantly invalidated)
     currentCredentials.email = newEmail;
-    currentCredentials.password = newPassword;
+    currentCredentials.passwordHash = bcrypt.hashSync(newPassword, 10);
     
-    // Issue a new token with the new email so the admin stays logged in
-    const newToken = jwt.sign({ role: 'admin', email: newEmail }, SECRET_KEY, { expiresIn: '24h' });
-    res.json({ message: 'Credentials updated successfully', token: newToken });
+    // INVALIDATE ALL OLD SESSIONS by changing the JWT Secret Key instantly!
+    currentSecret = require('crypto').randomBytes(64).toString('hex');
+    
+    const newToken = jwt.sign({ role: 'admin', email: newEmail }, currentSecret, { expiresIn: '24h' });
+    res.json({ message: 'Credentials updated. Old sessions invalidated.', token: newToken });
 });
 
-// --- VIDEO ROUTES (Matched to SQL Schema) ---
+// --- SECURE VIDEO STREAMING PROXY (Hides IPFS/Direct Links) ---
+app.get('/api/v1/stream/:id', async (req, res) => {
+    const { id } = req.params;
+    const { data, error } = await supabase.from('videos').select('url, type').eq('id', id).single();
+    
+    if (error || !data || !data.url) return res.status(404).send('Video not found');
+    if (data.type === 'youtube') return res.status(400).send('Use iframe for YouTube');
+
+    try {
+        const response = await axios.head(data.url); // Check if URL is valid
+        const size = response.headers['content-length'];
+        
+        // Handle HTTP Range Requests for Video Seeking/Streaming
+        const range = req.headers.range;
+        if (range) {
+            const parts = range.replace(/bytes=/, "").split("-");
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1, 10) : size - 1;
+            
+            const streamHeaders = {
+                'Content-Range': `bytes ${start}-${end}/${size}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': (end - start) + 1,
+                'Content-Type': 'video/mp4',
+            };
+            res.writeHead(206, streamHeaders);
+            
+            const streamResponse = await axios.get(data.url, { responseType: 'stream', headers: { Range: range } });
+            streamResponse.data.pipe(res);
+        } else {
+            res.setHeader('Content-Length', size);
+            res.setHeader('Content-Type', 'video/mp4');
+            const streamResponse = await axios.get(data.url, { responseType: 'stream' });
+            streamResponse.data.pipe(res);
+        }
+    } catch (err) {
+        res.status(500).send('Streaming error');
+    }
+});
+
+// --- DATA ROUTES (Videos, Audio, Posts) ---
 app.get('/api/v1/videos', async (req, res) => {
     const { data, error } = await supabase.from('videos').select('*').order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
 });
-
 app.post('/api/v1/videos', authMiddleware, async (req, res) => {
     const { title, url, type, parent_id, is_category, views, thumbnail_url, description } = req.body;
     const { data, error } = await supabase.from('videos').insert([{ 
@@ -68,7 +124,6 @@ app.post('/api/v1/videos', authMiddleware, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
 });
-
 app.put('/api/v1/videos/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const { data, error } = await supabase.from('videos').update(req.body).eq('id', id).select();
@@ -76,7 +131,6 @@ app.put('/api/v1/videos/:id', authMiddleware, async (req, res) => {
     if (!data.length) return res.status(404).json({ message: 'Not found' });
     res.json(data[0]);
 });
-
 app.delete('/api/v1/videos/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const { error } = await supabase.from('videos').delete().eq('id', id);
@@ -84,28 +138,17 @@ app.delete('/api/v1/videos/:id', authMiddleware, async (req, res) => {
     res.status(204).send();
 });
 
-// --- AUDIO ROUTES (Matched to SQL Schema) ---
 app.get('/api/v1/audio', async (req, res) => {
     const { data, error } = await supabase.from('audio').select('*').order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
 });
-
 app.post('/api/v1/audio', authMiddleware, async (req, res) => {
     const { title, url, desc } = req.body;
     const { data, error } = await supabase.from('audio').insert([{ title, url, desc: desc || null }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
 });
-
-app.put('/api/v1/audio/:id', authMiddleware, async (req, res) => {
-    const { id } = req.params;
-    const { data, error } = await supabase.from('audio').update(req.body).eq('id', id).select();
-    if (error) return res.status(500).json({ error: error.message });
-    if (!data.length) return res.status(404).json({ message: 'Not found' });
-    res.json(data[0]);
-});
-
 app.delete('/api/v1/audio/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
     const { error } = await supabase.from('audio').delete().eq('id', id);
@@ -113,15 +156,14 @@ app.delete('/api/v1/audio/:id', authMiddleware, async (req, res) => {
     res.status(204).send();
 });
 
-// --- POSTS & COURSES (Unchanged, assumed correct) ---
 app.get('/api/v1/posts', async (req, res) => {
     const { data, error } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
 });
 app.post('/api/v1/posts', authMiddleware, async (req, res) => {
-    const { content, imageUrl, videoUrl } = req.body;
-    const { data, error } = await supabase.from('posts').insert([{ content, imageUrl: imageUrl || null, videoUrl: videoUrl || null }]).select();
+    const { content, imageUrl } = req.body;
+    const { data, error } = await supabase.from('posts').insert([{ content, imageUrl: imageUrl || null }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
 });
@@ -131,23 +173,6 @@ app.delete('/api/v1/posts/:id', authMiddleware, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
     res.status(204).send();
 });
-app.get('/api/v1/courses', async (req, res) => {
-    const { data, error } = await supabase.from('courses').select('*').order('id', { ascending: false });
-    if (error) return res.status(500).json({ error: error.message });
-    res.json(data);
-});
-app.post('/api/v1/courses', authMiddleware, async (req, res) => {
-    const { name, desc, type } = req.body;
-    const { data, error } = await supabase.from('courses').insert([{ name, desc: desc || null, type: type || 'video' }]).select();
-    if (error) return res.status(500).json({ error: error.message });
-    res.status(201).json(data[0]);
-});
-app.delete('/api/v1/courses/:id', authMiddleware, async (req, res) => {
-    const { id } = req.params;
-    const { error } = await supabase.from('courses').delete().eq('id', id);
-    if (error) return res.status(500).json({ error: error.message });
-    res.status(204).send();
-});
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Production Server running on port ${PORT}`));
