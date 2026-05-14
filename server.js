@@ -10,14 +10,13 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 
 // --- SECURITY MIDDLEWARES ---
-app.use(helmet()); // Sets secure HTTP headers
+app.use(helmet());
 app.use(cors({ origin: '*' })); 
 app.use(express.json());
 
-// Rate Limiter for Login (Anti Brute-Force)
 const loginLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // Limit each IP to 5 requests per windowMs
+    windowMs: 15 * 60 * 1000,
+    max: 5,
     message: "Too many login attempts, please try again after 15 minutes"
 });
 
@@ -26,18 +25,17 @@ const SUPABASE_URL = 'https://aoxclvpbdoxklwfrumhr.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFveGNsdnBiZG94a2x3ZnJ1bWhyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1OTYyMzYsImV4cCI6MjA5NDE3MjIzNn0.U9p-nW4bXH6iujT7omhAt1lRL5WMwUVnvjhk69OID5U';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Dynamic Secret Key & Credentials (Changes when password is updated)
 let currentSecret = 'Maxaas_Gold_Trader_Initial_Secret_2026';
 let currentCredentials = { 
     email: 'admin@maxaas.u', 
-    passwordHash: bcrypt.hashSync('password', 10) // Default password: "password"
+    passwordHash: bcrypt.hashSync('password', 10) 
 };
 
 const authMiddleware = (req, res, next) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return res.status(401).json({ message: 'Unauthorized' });
     try {
-        jwt.verify(token, currentSecret); // Uses the active secret
+        jwt.verify(token, currentSecret);
         next();
     } catch (err) {
         res.status(403).json({ message: 'Invalid or Expired Token' });
@@ -57,18 +55,14 @@ app.post('/api/v1/auth/login', loginLimiter, async (req, res) => {
 app.post('/api/v1/auth/change-credentials', authMiddleware, async (req, res) => {
     const { newEmail, newPassword } = req.body;
     if (!newEmail || !newPassword) return res.status(400).json({ message: 'Email and password required' });
-    
     currentCredentials.email = newEmail;
     currentCredentials.passwordHash = bcrypt.hashSync(newPassword, 10);
-    
-    // INVALIDATE ALL OLD SESSIONS by changing the JWT Secret Key instantly!
-    currentSecret = require('crypto').randomBytes(64).toString('hex');
-    
+    currentSecret = require('crypto').randomBytes(64).toString('hex'); // Invalidate old tokens
     const newToken = jwt.sign({ role: 'admin', email: newEmail }, currentSecret, { expiresIn: '24h' });
-    res.json({ message: 'Credentials updated. Old sessions invalidated.', token: newToken });
+    res.json({ message: 'Credentials updated.', token: newToken });
 });
 
-// --- SECURE VIDEO STREAMING PROXY (Hides IPFS/Direct Links) ---
+// --- SECURE VIDEO STREAMING PROXY ---
 app.get('/api/v1/stream/:id', async (req, res) => {
     const { id } = req.params;
     const { data, error } = await supabase.from('videos').select('url, type').eq('id', id).single();
@@ -76,31 +70,37 @@ app.get('/api/v1/stream/:id', async (req, res) => {
     if (error || !data || !data.url) return res.status(404).send('Video not found');
     if (data.type === 'youtube') return res.status(400).send('Use iframe for YouTube');
 
+    let streamUrl = data.url;
+    if (streamUrl.includes('archive.gnews.to') && !streamUrl.endsWith('/download')) {
+        streamUrl = streamUrl.replace(/\/$/, '') + '/download';
+    }
+    if (streamUrl.includes('archive.org/details/')) {
+        const parts = streamUrl.split('/details/');
+        const fileId = parts[1].split('?')[0].replace(/\/$/, '');
+        streamUrl = `https://archive.org/download/${fileId}/${fileId}.mp4`;
+    }
+
     try {
-        const response = await axios.head(data.url); // Check if URL is valid
+        const response = await axios.head(streamUrl); 
         const size = response.headers['content-length'];
-        
-        // Handle HTTP Range Requests for Video Seeking/Streaming
         const range = req.headers.range;
+        
         if (range) {
             const parts = range.replace(/bytes=/, "").split("-");
             const start = parseInt(parts[0], 10);
-            const end = parts[1] ? parseInt(parts[1, 10) : size - 1;
-            
-            const streamHeaders = {
+            const end = parts[1] ? parseInt(parts[1], 10) : size - 1;
+            res.writeHead(206, {
                 'Content-Range': `bytes ${start}-${end}/${size}`,
                 'Accept-Ranges': 'bytes',
                 'Content-Length': (end - start) + 1,
                 'Content-Type': 'video/mp4',
-            };
-            res.writeHead(206, streamHeaders);
-            
-            const streamResponse = await axios.get(data.url, { responseType: 'stream', headers: { Range: range } });
+            });
+            const streamResponse = await axios.get(streamUrl, { responseType: 'stream', headers: { Range: range } });
             streamResponse.data.pipe(res);
         } else {
             res.setHeader('Content-Length', size);
             res.setHeader('Content-Type', 'video/mp4');
-            const streamResponse = await axios.get(data.url, { responseType: 'stream' });
+            const streamResponse = await axios.get(streamUrl, { responseType: 'stream' });
             streamResponse.data.pipe(res);
         }
     } catch (err) {
@@ -108,7 +108,7 @@ app.get('/api/v1/stream/:id', async (req, res) => {
     }
 });
 
-// --- DATA ROUTES (Videos, Audio, Posts) ---
+// --- DATA ROUTES ---
 app.get('/api/v1/videos', async (req, res) => {
     const { data, error } = await supabase.from('videos').select('*').order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
@@ -116,11 +116,7 @@ app.get('/api/v1/videos', async (req, res) => {
 });
 app.post('/api/v1/videos', authMiddleware, async (req, res) => {
     const { title, url, type, parent_id, is_category, views, thumbnail_url, description } = req.body;
-    const { data, error } = await supabase.from('videos').insert([{ 
-        title, url, type: type || 'video', parent_id: parent_id || null, 
-        is_category: is_category || false, views: views || 0, 
-        thumbnail_url: thumbnail_url || null, description: description || null 
-    }]).select();
+    const { data, error } = await supabase.from('videos').insert([{ title, url, type: type || 'video', parent_id: parent_id || null, is_category: is_category || false, views: views || 0, thumbnail_url: thumbnail_url || null, description: description || null }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
 });
@@ -174,5 +170,44 @@ app.delete('/api/v1/posts/:id', authMiddleware, async (req, res) => {
     res.status(204).send();
 });
 
+// --- QUOTES ROUTES ---
+app.get('/api/v1/quotes', async (req, res) => {
+    const { data, error } = await supabase.from('quotes').select('*').order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+});
+app.post('/api/v1/quotes', authMiddleware, async (req, res) => {
+    const { text, author } = req.body;
+    const { data, error } = await supabase.from('quotes').insert([{ text, author: author || 'Unknown' }]).select();
+    if (error) return res.status(500).json({ error: error.message });
+    res.status(201).json(data[0]);
+});
+app.delete('/api/v1/quotes/:id', authMiddleware, async (req, res) => {
+    const { id } = req.params;
+    const { error } = await supabase.from('quotes').delete().eq('id', id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.status(204).send();
+});
+
+// --- SETTINGS ROUTES (Menu Names & Avatar) ---
+app.get('/api/v1/settings', async (req, res) => {
+    const { data, error } = await supabase.from('settings').select('*');
+    if (error) return res.status(500).json({ error: error.message });
+    const settingsMap = {};
+    data.forEach(item => settingsMap[item.key] = item.value);
+    res.json(settingsMap);
+});
+app.put('/api/v1/settings', authMiddleware, async (req, res) => {
+    const updates = req.body; // Expects { menu_videos: "Muqaal", news_avatar: "url" }
+    try {
+        for (const [key, value] of Object.entries(updates)) {
+            await supabase.from('settings').upsert({ key, value }, { onConflict: 'key' });
+        }
+        res.json({ message: 'Settings updated successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Production Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
