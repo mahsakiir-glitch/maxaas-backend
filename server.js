@@ -6,7 +6,6 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 
 // --- CONFIGURATION ---
-// Enabled CORS for all origins to support Web3/Unstoppable Domain requests
 app.use(cors({ origin: '*' })); 
 app.use(express.json());
 
@@ -28,7 +27,9 @@ const authMiddleware = (req, res, next) => {
     }
 };
 
-// --- AUTH ROUTES ---
+// ==========================================
+// 🔥 AUTH ROUTES
+// ==========================================
 app.post('/api/v1/auth/login', (req, res) => {
     const { email, password } = req.body;
     if (email === 'admin@maxaas.u' && password === 'password') {
@@ -38,7 +39,9 @@ app.post('/api/v1/auth/login', (req, res) => {
     res.status(401).json({ message: 'Invalid credentials' });
 });
 
-// --- VIDEO ROUTES ---
+// ==========================================
+// 🔥 VIDEO ROUTES (Full CRUD)
+// ==========================================
 app.get('/api/v1/videos', async (req, res) => {
     const { data, error } = await supabase.from('videos').select('*').order('id', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
@@ -47,26 +50,17 @@ app.get('/api/v1/videos', async (req, res) => {
 
 app.post('/api/v1/videos', authMiddleware, async (req, res) => {
     const { title, url, desc, catId } = req.body;
-    const { data, error } = await supabase
-        .from('videos')
-        .insert([{ title, url, desc, catId: catId || null, views: 0 }])
-        .select();
+    const { data, error } = await supabase.from('videos').insert([{ title, url, desc, catId: catId || null, views: 0 }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
 });
 
 app.put('/api/v1/videos/:id', authMiddleware, async (req, res) => {
     const { id } = req.params;
-    const { views, title, url, desc, catId } = req.body;
-    const updateData = {};
-    if (views !== undefined) updateData.views = views;
-    if (title) updateData.title = title;
-    if (url) updateData.url = url;
-    if (desc) updateData.desc = desc;
-    if (catId !== undefined) updateData.catId = catId;
-
+    const updateData = req.body;
     const { data, error } = await supabase.from('videos').update(updateData).eq('id', id).select();
     if (error) return res.status(500).json({ error: error.message });
+    if (!data.length) return res.status(404).json({ message: 'Not found' });
     res.json(data[0]);
 });
 
@@ -77,7 +71,9 @@ app.delete('/api/v1/videos/:id', authMiddleware, async (req, res) => {
     res.status(204).send();
 });
 
-// --- AUDIO ROUTES ---
+// ==========================================
+// 🔥 AUDIO ROUTES (Full CRUD)
+// ==========================================
 app.get('/api/v1/audio', async (req, res) => {
     const { data, error } = await supabase.from('audio').select('*').order('id', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
@@ -86,12 +82,18 @@ app.get('/api/v1/audio', async (req, res) => {
 
 app.post('/api/v1/audio', authMiddleware, async (req, res) => {
     const { title, url, dur, catId } = req.body;
-    const { data, error } = await supabase
-        .from('audio')
-        .insert([{ title, url, dur: dur || '--:--', catId: catId || null }])
-        .select();
+    const { data, error } = await supabase.from('audio').insert([{ title, url, dur: dur || '--:--', catId: catId || null }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
+});
+
+app.put('/api/v1/audio/:id', authMiddleware, async (req, res) => {
+    const { id } = req.params;
+    const updateData = req.body;
+    const { data, error } = await supabase.from('audio').update(updateData).eq('id', id).select();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data.length) return res.status(404).json({ message: 'Not found' });
+    res.json(data[0]);
 });
 
 app.delete('/api/v1/audio/:id', authMiddleware, async (req, res) => {
@@ -101,7 +103,9 @@ app.delete('/api/v1/audio/:id', authMiddleware, async (req, res) => {
     res.status(204).send();
 });
 
-// --- POSTS (NEWS) ROUTES ---
+// ==========================================
+// 🔥 POSTS / NEWS ROUTES (Full CRUD)
+// ==========================================
 app.get('/api/v1/posts', async (req, res) => {
     const { data, error } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
@@ -110,12 +114,18 @@ app.get('/api/v1/posts', async (req, res) => {
 
 app.post('/api/v1/posts', authMiddleware, async (req, res) => {
     const { content, imageUrl, videoUrl, avatar } = req.body;
-    const { data, error } = await supabase
-        .from('posts')
-        .insert([{ content, imageUrl: imageUrl || null, videoUrl: videoUrl || null, avatar: avatar || null }])
-        .select();
+    const { data, error } = await supabase.from('posts').insert([{ content, imageUrl: imageUrl || null, videoUrl: videoUrl || null, avatar: avatar || null }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
+});
+
+app.put('/api/v1/posts/:id', authMiddleware, async (req, res) => {
+    const { id } = req.params;
+    const updateData = req.body;
+    const { data, error } = await supabase.from('posts').update(updateData).eq('id', id).select();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data.length) return res.status(404).json({ message: 'Not found' });
+    res.json(data[0]);
 });
 
 app.delete('/api/v1/posts/:id', authMiddleware, async (req, res) => {
@@ -125,7 +135,9 @@ app.delete('/api/v1/posts/:id', authMiddleware, async (req, res) => {
     res.status(204).send();
 });
 
-// --- COURSES ROUTES ---
+// ==========================================
+// 🔥 COURSES ROUTES (Full CRUD)
+// ==========================================
 app.get('/api/v1/courses', async (req, res) => {
     const { data, error } = await supabase.from('courses').select('*').order('id', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
@@ -134,12 +146,18 @@ app.get('/api/v1/courses', async (req, res) => {
 
 app.post('/api/v1/courses', authMiddleware, async (req, res) => {
     const { name, desc, type } = req.body;
-    const { data, error } = await supabase
-        .from('courses')
-        .insert([{ name, desc: desc || null, type: type || 'video' }])
-        .select();
+    const { data, error } = await supabase.from('courses').insert([{ name, desc: desc || null, type: type || 'video' }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data[0]);
+});
+
+app.put('/api/v1/courses/:id', authMiddleware, async (req, res) => {
+    const { id } = req.params;
+    const updateData = req.body;
+    const { data, error } = await supabase.from('courses').update(updateData).eq('id', id).select();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data.length) return res.status(404).json({ message: 'Not found' });
+    res.json(data[0]);
 });
 
 app.delete('/api/v1/courses/:id', authMiddleware, async (req, res) => {
@@ -152,5 +170,5 @@ app.delete('/api/v1/courses/:id', authMiddleware, async (req, res) => {
 // --- SERVER START ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`🚀 Server running on port ${PORT}`);
 });
