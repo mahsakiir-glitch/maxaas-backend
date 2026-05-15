@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ── Environment Variables ──
+// ── Environment Variables (Render.com ayaan ka soo qaadanay) ──
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || JWT_SECRET + '_admin';
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -24,7 +24,7 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// ── Middleware ──
+// ── Middleware ──────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(cors({ origin: '*', credentials: true }));
 app.use(express.json({ limit: '10mb' }));
@@ -34,9 +34,10 @@ const apiLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 120, message: { err
 app.use('/api/v1/auth', authLimiter);
 app.use('/api/v1', apiLimiter);
 
+// Serve static frontend from 'public' folder
 app.use(express.static('public'));
 
-// ── Helper Functions ──
+// ── Helper Functions ───────────────────────────
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -62,7 +63,7 @@ function resolveVideoUrl(video) {
   return url;
 }
 
-// ── Auto Admin Setup ──
+// ── Auto Admin Setup on Server Start ───────────
 async function setupDefaultAdmin() {
   try {
     const { data: admins } = await supabase.from('admin_users').select('id').limit(1);
@@ -118,10 +119,8 @@ app.get('/api/v1/stream/:videoId', async (req, res) => {
     if (!token) return res.status(401).json({ error: 'Stream token required' });
     const decoded = verifyStreamToken(token);
     if (!decoded || decoded.videoId !== req.params.videoId) return res.status(403).json({ error: 'Invalid token' });
-    
     const { data: video } = await supabase.from('videos').select('*').eq('id', req.params.videoId).single();
     if (!video) return res.status(404).json({ error: 'Video not found' });
-    
     const url = resolveVideoUrl(video);
     supabase.from('videos').update({ views: (video.views || 0) + 1 }).eq('id', video.id).then(() => {});
     
@@ -244,7 +243,7 @@ app.put('/api/v1/admin/credentials', authenticateToken, async (req, res) => {
   } catch(e) { res.status(500).json({ error: 'Failed' }); }
 });
 
-// ── SPA Fallback ──
+// ── SPA Fallback (Must be last!) ────────────────
 app.get('*', (req, res) => {
   res.sendFile('index.html', { root: 'public' });
 });
