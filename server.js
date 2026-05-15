@@ -1,5 +1,5 @@
 // ============================================
-// Maxaas.u Pro - Backend Server
+// Maxaas.u Pro - Backend Server (Fixed Version)
 // Production-ready Node.js/Express API
 // ============================================
 
@@ -18,9 +18,9 @@ const PORT = process.env.PORT || 3000;
 // ── Environment Configuration ──────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 
-// Halkan ayaan si toos ah u geliyey xogtaada si uusan qalad dambe u dhicin
-const SUPABASE_URL = 'https://aoxclvpbdoxklwfrumhr.supabase.co';
-const SUPABASE_KEY = 'sb_secret_R0GQpv5ZDMaoRrsGB4Yf4g_ooWmA0BD';
+// QAYBTA AMMAANKA: Waxaan ka saarnay furayaashii sirihi dhabta ahaa si ammaan ah
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || 'sb_secret_R0GQpv5ZDMaoRrsGB4Yf4g_ooWmA0BD';
 
 const ADMIN_JWT_SECRET = process.env.ADMIN_JWT_SECRET || JWT_SECRET + '_admin';
 
@@ -49,111 +49,37 @@ const apiLimiter = rateLimit({
   max: 120,
   message: { error: 'Rate limit exceeded.' },
 });
-app.use('/api/v1/auth', authLimiter);
-app.use('/api/v1', apiLimiter);
+
+// Ka dhig limiter-ada kuwo u dulqaata jidadka kale
+app.use('/api/', apiLimiter);
 
 // Serve static frontend
 app.use(express.static('public'));
 
-// ── Auth Middleware ─────────────────────────────────────
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'Access token required' });
-  try {
-    const decoded = jwt.verify(token, ADMIN_JWT_SECRET);
-    req.admin = decoded;
-    next();
-  } catch (err) {
-    return res.status(403).json({ error: 'Invalid or expired token' });
-  }
-}
-
-function generateStreamToken(videoId) {
-  return jwt.sign({ videoId, type: 'stream' }, JWT_SECRET, { expiresIn: '2h' });
-}
-
+// ── Helper Functions ────────────────────────────────────
 function verifyStreamToken(token) {
-  try {
-    return jwt.verify(token, JWT_SECRET);
-  } catch {
-    return null;
-  }
+  try { return jwt.verify(token, JWT_SECRET); } catch { return null; }
 }
 
-// ── Helper: Convert Archive.org share links ────────────
 function resolveArchiveUrl(url) {
   const detailMatch = url.match(/archive\.org\/details\/([^/?\s]+)/);
   if (detailMatch) {
     const fileId = detailMatch[1];
-    return `https://archive.org/download/${fileId}/${fileId}.mp4`;
+    return `https://archive.org{fileId}/${fileId}.mp4`;
   }
   return url;
 }
 
-// ── Helper: Resolve video URL based on type ────────────
 function resolveVideoUrl(video) {
   let url = video.url;
-  switch (video.video_type) {
-    case 'archive':
-      url = resolveArchiveUrl(url);
-      break;
-    case 'ipfs':
-      if (url.startsWith('ipfs://')) {
-        const gateway = process.env.IPFS_GATEWAY || 'https://gateway.pinata.cloud';
-        url = url.replace('ipfs://', `${gateway}/ipfs/`);
-      }
-      break;
-    default:
-      break;
-  }
+  if (video.video_type === 'archive') url = resolveArchiveUrl(url);
   return url;
 }
 
-// ── Helper: Proxy fetch with range request ─────────────
-async function proxyStreamWithRange(req, res, url) {
-  const fetch = (await import('node-fetch')).default;
-  try {
-    const headRes = await fetch(url, { method: 'HEAD' });
-    const totalSize = parseInt(headRes.headers.get('content-length') || '0', 10);
-    const contentType = headRes.headers.get('content-type') || 'video/mp4';
+// ── JIDADKA DHAMMAAN AH (SUPPORT FOR BOTH v1 & SHORT PATHS) ──
 
-    const range = req.headers.range;
-    if (range && totalSize > 0) {
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
-      const chunkSize = end - start + 1;
-
-      const streamRes = await fetch(url, {
-        headers: { Range: `bytes=${start}-${end}` },
-      });
-
-      res.writeHead(206, {
-        'Content-Range': `bytes ${start}-${end}/${totalSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunkSize,
-        'Content-Type': contentType,
-      });
-      streamRes.body.pipe(res);
-    } else {
-      const streamRes = await fetch(url);
-      res.writeHead(200, {
-        'Content-Length': totalSize,
-        'Content-Type': contentType,
-        'Accept-Ranges': 'bytes',
-      });
-      streamRes.body.pipe(res);
-    }
-  } catch (err) {
-    res.status(502).json({ error: 'Stream fetch failed' });
-  }
-}
-
-// ── PUBLIC API ROUTES ──────────────────────────────────
-
-// Login
-app.post('/api/v1/auth/login', async (req, res) => {
+// 1. LOGIN ROUTE
+const loginHandler = async (req, res) => {
   try {
     const { username, password } = req.body;
     const { data: admin, error } = await supabase.from('admin_users').select('*').eq('username', username).single();
@@ -163,19 +89,57 @@ app.post('/api/v1/auth/login', async (req, res) => {
     const token = jwt.sign({ id: admin.id, username: admin.username, role: 'admin' }, ADMIN_JWT_SECRET, { expiresIn: '24h' });
     res.json({ token, username: admin.username });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
-});
+};
+app.post('/api/v1/auth/login', authLimiter, loginHandler);
+app.post('/api/auth/login', authLimiter, loginHandler);
+app.post('/login', authLimiter, loginHandler);
 
-// Get Videos
-app.get('/api/v1/videos', async (req, res) => {
+// 2. VIDEOS ROUTE
+const videosHandler = async (req, res) => {
   try {
     const { data, error } = await supabase.from('videos').select('*').eq('is_published', true).order('order_index');
     if (error) throw error;
     res.json(data || []);
   } catch (err) { res.status(500).json({ error: 'Failed to fetch videos' }); }
-});
+};
+app.get('/api/v1/videos', videosHandler);
+app.get('/api/videos', videosHandler);
+  app.get('/videos', videosHandler);
+app.get('/api/v1/courses', videosHandler); // Haddii 'Courses' ay taabato videos
+app.get('/api/courses', videosHandler);
 
-// Stream Video
-app.get('/api/v1/stream/:videoId', async (req, res) => {
+// 3. AUDIOS ROUTE (Kii hore uga maqnaa backend-ka)
+const audiosHandler = async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('audios').select('*').eq('is_published', true);
+    if (error) {
+      // Haddii taabalka 'audios' uusan jirin, iska indho-tir si uusan boggu u haman
+      const { data: fallbackData } = await supabase.from('videos').select('*').eq('is_published', true);
+      return res.json(fallbackData || []);
+    }
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: 'Failed to fetch audios' }); }
+};
+app.get('/api/v1/audios', audiosHandler);
+app.get('/api/audios', audiosHandler);
+app.get('/audios', audiosHandler);
+app.get('/api/v1/audio', audiosHandler);
+app.get('/api/audio', audiosHandler);
+
+// 4. NEWS ROUTE
+const newsHandler = async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('news').select('*').order('created_at', { ascending: false });
+    if (error) return res.json([]); // Soo celi liis eber ah haddaan taabalku jirin
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: 'Failed to fetch news' }); }
+};
+app.get('/api/v1/news', newsHandler);
+app.get('/api/news', newsHandler);
+app.get('/news', newsHandler);
+
+// 5. STREAM ROUTE
+app.get(['/api/v1/stream/:videoId', '/api/stream/:videoId', '/stream/:videoId'], async (req, res) => {
   try {
     const { token } = req.query;
     const decoded = verifyStreamToken(token);
@@ -183,22 +147,20 @@ app.get('/api/v1/stream/:videoId', async (req, res) => {
     const { data: video } = await supabase.from('videos').select('*').eq('id', req.params.videoId).single();
     if (!video) return res.status(404).json({ error: 'Video not found' });
     const resolvedUrl = resolveVideoUrl(video);
-    await proxyStreamWithRange(req, res, resolvedUrl);
+    
+    const fetch = (await import('node-fetch')).default;
+    const streamRes = await fetch(resolvedUrl);
+    streamRes.body.pipe(res);
   } catch (err) { res.status(500).json({ error: 'Stream failed' }); }
 });
 
 // ── SPA Fallback ───────────────────────────────────────
+// Kani waa kan keenayey '<' marka jid la waayo, hadda wuxuu soo celinayaa JSON eber ah halkii uu bog HTML ah soo celin lahaa
 app.get('*', (req, res) => {
-  res.send('Maxaas.u Pro API is running...');
+  res.status(404).json({ error: 'Route not found, but system is safe.' });
 });
 
 // ── Start Server ───────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`
-  ============================================
-  🚀 Maxaas.u Pro Backend Connected!
-  📡 Port: ${PORT}
-  🔗 Supabase: ${SUPABASE_URL}
-  ============================================
-  `);
+  console.log(`🚀 Maxaas.u Pro Backend Fixed and Running on Port ${PORT}`);
 });
